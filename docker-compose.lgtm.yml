@@ -1,0 +1,24 @@
+---
+# OATS is an acceptance testing framework for OpenTelemetry
+# https://github.com/grafana/oats/tree/main/yaml
+services:
+  go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      server
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: lgtm:4317
+      OTEL_METRIC_EXPORT_INTERVAL: "5000" # so we don't have to wait 60s for metrics
+    ports:
+      - "8080:8080"
+    depends_on:
+      - lgtm
+
+  lgtm:
+    image: grafana/otel-lgtm
+    ports:
+      - "4317:4317"
+      - "3000:3000"
+

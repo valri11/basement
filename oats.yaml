@@ -1,0 +1,18 @@
+---
+# OATS is an acceptance testing framework for OpenTelemetry
+# https://github.com/grafana/oats/tree/main/yaml
+docker-compose:
+  files:
+    - ./docker-compose.oats.yml
+input:
+  - path: /livez
+expected:
+  traces:
+    - traceql: '{ span.http.target = "/livez" }'
+      spans:
+        - name: "livez"
+          attributes:
+            service.name: basement
+  metrics:
+    - promql: 'req_cnt_total{service_name="basement"}'
+      value: "> 0"
