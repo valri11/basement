@@ -62,6 +62,7 @@ func InitProviders(ctx context.Context,
 	}
 
 	if disableTelemetry {
+		slog.Info("telemetry disabled")
 		return shutdown, nil
 	}
 
@@ -97,7 +98,7 @@ func InitProviders(ctx context.Context,
 
 	envTraceExporters := strings.Split(os.Getenv("OTEL_TRACES_EXPORTER"), ",")
 
-	if len(envTraceExporters) == 0 || slices.Contains(envTraceExporters, "otlp") {
+	if slices.Contains(envTraceExporters, "") || slices.Contains(envTraceExporters, "otlp") {
 		traceClient := otlptracegrpc.NewClient(
 			otlptracegrpc.WithInsecure(),
 			otlptracegrpc.WithEndpoint(otelEndpoint),
@@ -132,7 +133,7 @@ func InitProviders(ctx context.Context,
 
 	envLogsExporters := strings.Split(os.Getenv("OTEL_LOGS_EXPORTER"), ",")
 
-	if len(envLogsExporters) == 0 || slices.Contains(envLogsExporters, "otlp") {
+	if slices.Contains(envLogsExporters, "") || slices.Contains(envLogsExporters, "otlp") {
 		logExporterGrpc, err := otlploggrpc.New(ctx,
 			otlploggrpc.WithInsecure(),
 			otlploggrpc.WithEndpoint(otelEndpoint),
@@ -184,7 +185,7 @@ func InitProviders(ctx context.Context,
 
 	envMetricExporters := strings.Split(os.Getenv("OTEL_METRICS_EXPORTER"), ",")
 
-	if len(envMetricExporters) == 0 || slices.Contains(envMetricExporters, "otlp") {
+	if slices.Contains(envMetricExporters, "") || slices.Contains(envMetricExporters, "otlp") {
 		metricExporter, err := otlpmetricgrpc.New(ctx,
 			otlpmetricgrpc.WithInsecure(),
 			otlpmetricgrpc.WithEndpoint(otelEndpoint),
