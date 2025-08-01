@@ -58,15 +58,20 @@ func init() {
 	serverCmd.Flags().BoolP("disable-tls", "", false, "development mode (http on loclahost)")
 	serverCmd.Flags().String("tls-cert", "", "TLS certificate file")
 	serverCmd.Flags().String("tls-cert-key", "", "TLS certificate key file")
-	serverCmd.Flags().BoolP("enable-telemetry", "", false, "enable telemetry publishing")
+	serverCmd.Flags().BoolP("disable-telemetry", "", false, "disable telemetry publishing")
 	serverCmd.Flags().String("telemetry-collector", "", "open telemetry grpc collector")
+
+	viper.BindEnv("server.disabletelemetry", "OTEL_SDK_DISABLED")
+	viper.BindEnv("server.telemetrycollector", "OTEL_EXPORTER_OTLP_ENDPOINT")
 
 	viper.BindPFlag("server.port", serverCmd.Flags().Lookup("port"))
 	viper.BindPFlag("server.disabletls", serverCmd.Flags().Lookup("disable-tls"))
 	viper.BindPFlag("server.tlscertfile", serverCmd.Flags().Lookup("tls-cert"))
 	viper.BindPFlag("server.tlscertkeyfile", serverCmd.Flags().Lookup("tls-cert-key"))
-	viper.BindPFlag("server.enabletelemetry", serverCmd.Flags().Lookup("enable-telemetry"))
+	viper.BindPFlag("server.disablelemetry", serverCmd.Flags().Lookup("disable-telemetry"))
 	viper.BindPFlag("server.telemetrycollector", serverCmd.Flags().Lookup("telemetry-collector"))
+
+	viper.AutomaticEnv()
 }
 
 func newWebSrvHandler(cfg config.Configuration) (*srvHandler, error) {
@@ -87,7 +92,9 @@ func newWebSrvHandler(cfg config.Configuration) (*srvHandler, error) {
 }
 
 func doServerCmd(cmd *cobra.Command, args []string) {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
 	slog.SetDefault(logger)
 
 	var cfg config.Configuration
@@ -103,7 +110,7 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
-	shutdown, err := telemetry.InitProviders(context.Background(), cfg.Server.EnableTelemetry, serviceName, cfg.Server.TelemetryCollector)
+	shutdown, err := telemetry.InitProviders(context.Background(), cfg.Server.DisableTelemetry, serviceName, cfg.Server.TelemetryCollector)
 	if err != nil {
 		log.Fatal(err)
 	}

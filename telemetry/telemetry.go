@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	slogmulti "github.com/samber/slog-multi"
@@ -16,6 +18,9 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	otelsdklog "go.opentelemetry.io/otel/sdk/log"
@@ -26,7 +31,7 @@ import (
 )
 
 func InitProviders(ctx context.Context,
-	enableTracing bool,
+	disableTelemetry bool,
 	serviceName string,
 	otelEndpoint string,
 ) (func(context.Context) error, error) {
@@ -38,8 +43,11 @@ func InitProviders(ctx context.Context,
 			otelEndpoint = "localhost:4317"
 		}
 	}
-	slog.Info("init OTEL providers", "endpoint",
-		otelEndpoint, "service", serviceName, "enableTracing", enableTracing)
+	slog.Debug("init OTEL providers",
+		"endpoint", otelEndpoint,
+		"service", serviceName,
+		"disableTelemetry", disableTelemetry,
+	)
 
 	// shutdown calls cleanup functions registered via shutdownFuncs.
 	// The errors from the calls are joined.
@@ -53,7 +61,7 @@ func InitProviders(ctx context.Context,
 		return err
 	}
 
-	if !enableTracing {
+	if disableTelemetry {
 		return shutdown, nil
 	}
 
@@ -83,46 +91,71 @@ func InitProviders(ctx context.Context,
 	)
 	otel.SetTextMapPropagator(prop)
 
-	traceClient := otlptracegrpc.NewClient(
-		otlptracegrpc.WithInsecure(),
-		otlptracegrpc.WithEndpoint(otelEndpoint),
-	)
-	traceExporter, err := otlptrace.New(ctx, traceClient)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-	tracerProvider := trace.NewTracerProvider(
+	traceProviderOptions := []trace.TracerProviderOption{
 		trace.WithResource(res),
-		trace.WithBatcher(traceExporter),
-	)
+	}
+
+	envTraceExporters := strings.Split(os.Getenv("OTEL_TRACES_EXPORTER"), ",")
+
+	if len(envTraceExporters) == 0 || slices.Contains(envTraceExporters, "otlp") {
+		traceClient := otlptracegrpc.NewClient(
+			otlptracegrpc.WithInsecure(),
+			otlptracegrpc.WithEndpoint(otelEndpoint),
+		)
+		traceExporter, err := otlptrace.New(ctx, traceClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create trace exporter: %w", err)
+		}
+		traceProviderOptions = append(traceProviderOptions,
+			trace.WithBatcher(traceExporter))
+	}
+
+	if slices.Contains(envTraceExporters, "console") {
+		traceConsoleExporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+		if err != nil {
+			return nil, fmt.Errorf("failed to create trace console exporter: %w", err)
+		}
+		traceProviderOptions = append(traceProviderOptions,
+			trace.WithBatcher(traceConsoleExporter))
+	}
+
+	tracerProvider := trace.NewTracerProvider(traceProviderOptions...)
 
 	shutdownFuncs = append(shutdownFuncs, tracerProvider.Shutdown)
 	otel.SetTracerProvider(tracerProvider)
 
 	// setup logging
 
-	logExporterGrpc, err := otlploggrpc.New(ctx,
-		otlploggrpc.WithInsecure(),
-		otlploggrpc.WithEndpoint(otelEndpoint),
-	)
-	if err != nil {
-		err = handleErr(err)
-		return nil, err
+	logsProviderOptions := []otelsdklog.LoggerProviderOption{
+		otelsdklog.WithResource(res),
 	}
 
-	/*
+	envLogsExporters := strings.Split(os.Getenv("OTEL_LOGS_EXPORTER"), ",")
+
+	if len(envLogsExporters) == 0 || slices.Contains(envLogsExporters, "otlp") {
+		logExporterGrpc, err := otlploggrpc.New(ctx,
+			otlploggrpc.WithInsecure(),
+			otlploggrpc.WithEndpoint(otelEndpoint),
+		)
+		if err != nil {
+			err = handleErr(err)
+			return nil, err
+		}
+		logsProviderOptions = append(logsProviderOptions,
+			otelsdklog.WithProcessor(otelsdklog.NewBatchProcessor(logExporterGrpc)))
+	}
+
+	if slices.Contains(envLogsExporters, "console") {
 		logExporterConsole, err := stdoutlog.New()
 		if err != nil {
 			err = handleErr(err)
 			return nil, err
 		}
-	*/
+		logsProviderOptions = append(logsProviderOptions,
+			otelsdklog.WithProcessor(otelsdklog.NewBatchProcessor(logExporterConsole)))
+	}
 
-	logProvider := otelsdklog.NewLoggerProvider(
-		otelsdklog.WithProcessor(otelsdklog.NewBatchProcessor(logExporterGrpc)),
-		//otelsdklog.WithProcessor(otelsdklog.NewBatchProcessor(logExporterConsole)),
-		otelsdklog.WithResource(res),
-	)
+	logProvider := otelsdklog.NewLoggerProvider(logsProviderOptions...)
 
 	global.SetLoggerProvider(logProvider)
 	shutdownFuncs = append(shutdownFuncs, logProvider.Shutdown)
@@ -136,7 +169,6 @@ func InitProviders(ctx context.Context,
 
 	// create new logger that wrap 2 handlers
 	logger := slog.New(slogmulti.Fanout(
-		//slog.Default().Handler(),
 		slogHandler,
 		otelSlogHandler,
 	))
@@ -146,18 +178,39 @@ func InitProviders(ctx context.Context,
 
 	// setup metrics
 
-	metricExporter, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithInsecure(),
-		otlpmetricgrpc.WithEndpoint(otelEndpoint),
-	)
-	if err != nil {
-		err = handleErr(err)
-		return nil, err
+	metricProviderOptions := []metric.Option{
+		metric.WithResource(res),
+	}
+
+	envMetricExporters := strings.Split(os.Getenv("OTEL_METRICS_EXPORTER"), ",")
+
+	if len(envMetricExporters) == 0 || slices.Contains(envMetricExporters, "otlp") {
+		metricExporter, err := otlpmetricgrpc.New(ctx,
+			otlpmetricgrpc.WithInsecure(),
+			otlpmetricgrpc.WithEndpoint(otelEndpoint),
+		)
+		if err != nil {
+			err = handleErr(err)
+			return nil, err
+		}
+		metricProviderOptions = append(metricProviderOptions,
+			metric.WithReader(metric.NewPeriodicReader(metricExporter)),
+		)
+	}
+
+	if slices.Contains(envMetricExporters, "console") {
+		metricExporterConsole, err := stdoutmetric.New()
+		if err != nil {
+			err = handleErr(err)
+			return nil, err
+		}
+		metricProviderOptions = append(metricProviderOptions,
+			metric.WithReader(metric.NewPeriodicReader(metricExporterConsole)),
+		)
 	}
 
 	meterProvider := metric.NewMeterProvider(
-		metric.WithReader(metric.NewPeriodicReader(metricExporter)),
-		metric.WithResource(res),
+		metricProviderOptions...,
 	)
 
 	otel.SetMeterProvider(meterProvider)

@@ -5,7 +5,7 @@ type ServerConfig struct {
 	DisableTLS         bool
 	TLSCertFile        string
 	TLSCertKeyFile     string
-	EnableTelemetry    bool
+	DisableTelemetry   bool
 	TelemetryCollector string
 }
 
