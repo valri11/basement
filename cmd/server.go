@@ -1,5 +1,5 @@
 /*
-Copyright © 2025 NAME HERE <EMAIL ADDRESS>
+Copyright © 2025 Val Gridnev <valer.gr@gmail.com>
 */
 package cmd
 
@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,17 +31,11 @@ const (
 	serviceName = "basement"
 )
 
-// serverCmd represents the server command
 var serverCmd = &cobra.Command{
 	Use:   "server",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
-	Run: doServerCmd,
+	Short: "Start the HTTP server with OpenTelemetry instrumentation",
+	Long:  `Start the basement HTTP server with configurable OpenTelemetry traces, metrics, and logs export.`,
+	Run:   doServerCmd,
 }
 
 type srvHandler struct {
@@ -55,7 +48,7 @@ func init() {
 	rootCmd.AddCommand(serverCmd)
 
 	serverCmd.Flags().Int("port", 8080, "service port to listen")
-	serverCmd.Flags().BoolP("disable-tls", "", false, "development mode (http on loclahost)")
+	serverCmd.Flags().BoolP("disable-tls", "", false, "development mode (http on localhost)")
 	serverCmd.Flags().String("tls-cert", "", "TLS certificate file")
 	serverCmd.Flags().String("tls-cert-key", "", "TLS certificate key file")
 	serverCmd.Flags().BoolP("disable-telemetry", "", false, "disable telemetry publishing")
@@ -68,7 +61,7 @@ func init() {
 	viper.BindPFlag("server.disabletls", serverCmd.Flags().Lookup("disable-tls"))
 	viper.BindPFlag("server.tlscertfile", serverCmd.Flags().Lookup("tls-cert"))
 	viper.BindPFlag("server.tlscertkeyfile", serverCmd.Flags().Lookup("tls-cert-key"))
-	viper.BindPFlag("server.disablelemetry", serverCmd.Flags().Lookup("disable-telemetry"))
+	viper.BindPFlag("server.disabletelemetry", serverCmd.Flags().Lookup("disable-telemetry"))
 	viper.BindPFlag("server.telemetrycollector", serverCmd.Flags().Lookup("telemetry-collector"))
 
 	viper.AutomaticEnv()
@@ -77,21 +70,22 @@ func init() {
 func newWebSrvHandler(cfg config.Configuration) (*srvHandler, error) {
 	tracer := otel.Tracer(serviceName)
 
-	metrics, err := metrics.NewAppMetrics(otel.GetMeterProvider().Meter(serviceName))
+	appMetrics, err := metrics.NewAppMetrics(otel.GetMeterProvider().Meter(serviceName))
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to create metrics: %w", err)
 	}
 
 	srv := srvHandler{
 		cfg:     cfg,
 		tracer:  tracer,
-		metrics: metrics,
+		metrics: appMetrics,
 	}
 
 	return &srv, nil
 }
 
 func doServerCmd(cmd *cobra.Command, args []string) {
+	// Set up early logger with debug level (telemetry.InitProviders will replace with fanout logger)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
@@ -100,8 +94,8 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 	var cfg config.Configuration
 	err := viper.Unmarshal(&cfg)
 	if err != nil {
-		log.Fatalf("ERR: %v", err)
-		return
+		slog.Error("failed to unmarshal config", "error", err)
+		os.Exit(1)
 	}
 	slog.Debug("config", "cfg", cfg)
 
@@ -112,18 +106,19 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 
 	shutdown, err := telemetry.InitProviders(context.Background(), cfg.Server.DisableTelemetry, serviceName, cfg.Server.TelemetryCollector)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to init telemetry providers", "error", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := shutdown(context.Background()); err != nil {
-			log.Fatal("failed to shutdown TracerProvider: %w", err)
+			slog.Error("failed to shutdown telemetry providers", "error", err)
 		}
 	}()
 
 	h, err := newWebSrvHandler(cfg)
 	if err != nil {
-		log.Fatalf("ERR: %v", err)
-		return
+		slog.Error("failed to create server handler", "error", err)
+		os.Exit(1)
 	}
 
 	mux := http.NewServeMux()
@@ -140,7 +135,6 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 		handlerChain(
 			otelhttp.NewHandler(http.HandlerFunc(h.livezHandler), "livez")))
 
-	// start server listen with error handling
 	srv := &http.Server{
 		Addr:         fmt.Sprintf("0.0.0.0:%d", cfg.Server.Port),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
@@ -160,25 +154,27 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	// Wait for interruption.
+	// Wait for interruption or server error.
 	select {
-	case <-srvErr:
-		// Error when starting HTTP server.
+	case err := <-srvErr:
+		slog.Error("server failed to start", "error", err)
 		return
 	case <-ctx.Done():
-		// Wait for first CTRL+C.
-		// Stop receiving signal notifications as soon as possible.
 		stop()
 	}
 
-	// When Shutdown is called, ListenAndServe immediately returns ErrServerClosed.
-	srv.Shutdown(context.Background())
+	// Graceful shutdown with timeout.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server shutdown failed", "error", err)
+	}
 }
 
 func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	tracer := telemetry.MustTracerFromContext(ctx)
+	tracer := telemetry.TracerOrDefault(ctx)
 	_, span := tracer.Start(ctx, "livezHandler")
 	defer span.End()
 
@@ -198,5 +194,7 @@ func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(out)
+	if _, err := w.Write(out); err != nil {
+		slog.WarnContext(ctx, "failed to write response", "error", err)
+	}
 }

@@ -23,7 +23,7 @@ func WithRequestLog() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			tracer := MustTracerFromContext(ctx)
+			tracer := TracerOrDefault(ctx)
 			ctx, span := tracer.Start(ctx, "request")
 			defer span.End()
 			r = r.WithContext(ctx)

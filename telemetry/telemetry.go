@@ -166,7 +166,9 @@ func InitProviders(ctx context.Context,
 	// create slog handler that will send log to otel collector
 	otelSlogHandler := otelslog.NewHandler(serviceName, otelslog.WithLoggerProvider(logProvider))
 
-	slogHandler := slog.NewJSONHandler(os.Stdout, nil)
+	slogHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
 
 	// create new logger that wrap 2 handlers
 	logger := slog.New(slogmulti.Fanout(

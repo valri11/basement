@@ -1,16 +1,22 @@
-FROM golang:1.24
+# Builder stage
+FROM golang:1.24 AS builder
 
 WORKDIR /app
 
-COPY . ./
-
+COPY go.mod go.sum ./
 RUN go mod download
 
-# Build
+COPY . ./
+
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/basement
 
-EXPOSE 8081
+# Runtime stage
+FROM alpine:3.21
 
-# Run
-ENTRYPOINT ["/app/basement"]
+RUN apk add --no-cache ca-certificates
 
+COPY --from=builder /app/basement /usr/local/bin/basement
+
+EXPOSE 8080
+
+ENTRYPOINT ["basement"]

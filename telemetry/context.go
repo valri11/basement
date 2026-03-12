@@ -2,7 +2,9 @@ package telemetry
 
 import (
 	"context"
+	"log/slog"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -13,10 +15,12 @@ func TracerFromContext(ctx context.Context) (trace.Tracer, bool) {
 	return t, ok
 }
 
-func MustTracerFromContext(ctx context.Context) trace.Tracer {
+// TracerOrDefault extracts the tracer from context, falling back to the global tracer.
+func TracerOrDefault(ctx context.Context) trace.Tracer {
 	t, ok := ctx.Value(ctxTracerKey{}).(trace.Tracer)
 	if !ok {
-		panic("otel tracer not set in context")
+		slog.Warn("otel tracer not set in context, using global tracer")
+		return otel.Tracer("fallback")
 	}
 	return t
 }
