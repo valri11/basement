@@ -30,15 +30,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure registry auth
-        run: |
-          mkdir -p ~/.docker
-          AUTH=$(printf '%s:%s' '${{ gitea.actor }}' '${{ secrets.REGISTRY_TOKEN }}' | base64 -w0)
-          echo "{\"auths\":{\"datavault2.home.lab:15300\":{\"auth\":\"$AUTH\"}}}" > ~/.docker/config.json
+      - name: Install skopeo
+        run: apt-get update && apt-get install -y skopeo
 
-      - name: Build and push
+      - name: Build image
         run: |
           IMAGE=datavault2.home.lab:15300/${{ gitea.repository }}
           docker build --network host -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
-          docker push $IMAGE:latest
-          docker push $IMAGE:${{ github.sha }}
+
+      - name: Push to Gitea registry
+        run: |
+          IMAGE=datavault2.home.lab:15300/${{ gitea.repository }}
+          mkdir -p ~/.docker
+          AUTH=$(printf '%s:%s' '${{ gitea.actor }}' '${{ secrets.REGISTRY_TOKEN }}' | base64 -w0)
+          echo "{\"auths\":{\"datavault2.home.lab:15300\":{\"auth\":\"$AUTH\"}}}" > ~/.docker/config.json
+          skopeo copy --dest-tls-verify=false \
+            docker-daemon:$IMAGE:latest \
+            docker://$IMAGE:latest
+          skopeo copy --dest-tls-verify=false \
+            docker-daemon:$IMAGE:${{ github.sha }} \
+            docker://$IMAGE:${{ github.sha }}
