@@ -1,0 +1,10 @@
+.git
+.gitea
+.claude
+k8s/
+build/
+*.md
+LICENSE
+oats.yaml
+docker-compose*.yml
+run_basement.sh

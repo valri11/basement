@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/justinas/alice"
@@ -42,6 +43,7 @@ type srvHandler struct {
 	cfg     config.Configuration
 	tracer  trace.Tracer
 	metrics *metrics.AppMetrics
+	ready   bool
 }
 
 func init() {
@@ -101,7 +103,7 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 
 	ctx := context.Background()
 	// Handle SIGINT (CTRL+C) gracefully.
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	shutdown, err := telemetry.InitProviders(context.Background(), cfg.Server.DisableTelemetry, serviceName, cfg.Server.TelemetryCollector)
@@ -135,6 +137,8 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 		handlerChain(
 			otelhttp.NewHandler(http.HandlerFunc(h.livezHandler), "livez")))
 
+	mux.HandleFunc("/readyz", h.readyzHandler)
+
 	srv := &http.Server{
 		Addr:         fmt.Sprintf("0.0.0.0:%d", cfg.Server.Port),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
@@ -147,6 +151,7 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 	srvErr := make(chan error, 1)
 	go func() {
 		slog.Info("server started", "port", cfg.Server.Port)
+		h.ready = true
 		if cfg.Server.DisableTLS {
 			srvErr <- srv.ListenAndServe()
 		} else {
@@ -169,6 +174,16 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown failed", "error", err)
 	}
+}
+
+func (h *srvHandler) readyzHandler(w http.ResponseWriter, r *http.Request) {
+	if !h.ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"status":"not ready"}`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ready"}`))
 }
 
 func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
