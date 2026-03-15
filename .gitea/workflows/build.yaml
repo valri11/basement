@@ -39,6 +39,6 @@ jobs:
       - name: Build and push
         run: |
           IMAGE=datavault2.home.lab:15300/${{ gitea.repository }}
-          docker build -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
+          docker build --network host -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
           docker push $IMAGE:latest
           docker push $IMAGE:${{ github.sha }}
