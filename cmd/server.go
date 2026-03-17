@@ -23,9 +23,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/valri11/basement/config"
-	"github.com/valri11/basement/metrics"
-	"github.com/valri11/basement/telemetry"
+	"github.com/valri11/go-servicepack/metrics"
 	"github.com/valri11/go-servicepack/middleware/cors"
+	"github.com/valri11/go-servicepack/telemetry"
 )
 
 const (
