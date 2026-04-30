@@ -7,7 +7,7 @@ require (
 	github.com/samber/slog-multi v1.7.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/valri11/go-servicepack v0.0.0-20260312031811-52ee7549c1fa
+	github.com/valri11/go-servicepack v0.0.0-20260318012307-7da24b9a597b
 	go.opentelemetry.io/contrib/bridges/otelslog v0.17.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.67.0
