@@ -36,7 +36,7 @@ jobs:
       - name: Build image
         run: |
           IMAGE=datavault2.home.lab:15300/${{ gitea.repository }}
-          docker build --load host -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
+          docker build --load -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
 
       - name: Push to Gitea registry
         run: |
