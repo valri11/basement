@@ -6,7 +6,7 @@ require (
 	github.com/justinas/alice v1.2.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/valri11/go-servicepack v0.0.0-20260317005936-677fe44e981d
+	github.com/valri11/go-servicepack v0.0.0-20260812023316-974d34afa29e
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/trace v1.42.0

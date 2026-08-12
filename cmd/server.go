@@ -25,6 +25,7 @@ import (
 	"github.com/valri11/basement/config"
 	"github.com/valri11/go-servicepack/metrics"
 	"github.com/valri11/go-servicepack/middleware/cors"
+	"github.com/valri11/go-servicepack/problem"
 	"github.com/valri11/go-servicepack/telemetry"
 )
 
@@ -130,6 +131,9 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 		telemetry.WithOtelTracerContext(h.tracer),
 		telemetry.WithRequestLog(),
 		metrics.WithMetrics(h.metrics),
+		// After WithRequestLog so a span exists for RecordError, and inside
+		// WithMetrics so a recovered 500 is still counted in err_cnt.
+		problem.Recoverer,
 	}
 	handlerChain := alice.New(mwChain...).Then
 
@@ -138,6 +142,17 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 			otelhttp.NewHandler(http.HandlerFunc(h.livezHandler), "livez")))
 
 	mux.HandleFunc("/readyz", h.readyzHandler)
+
+	// Demo endpoints exercising the RFC 9457 error paths.
+	mux.Handle("/demo/validation",
+		handlerChain(
+			otelhttp.NewHandler(http.HandlerFunc(h.demoValidationHandler), "demo-validation")))
+	mux.Handle("/demo/panic",
+		handlerChain(
+			otelhttp.NewHandler(http.HandlerFunc(h.demoPanicHandler), "demo-panic")))
+
+	// Unmatched routes get problem+json instead of http.NotFound's text/plain.
+	mux.Handle("/", handlerChain(problem.NotFoundHandler()))
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf("0.0.0.0:%d", cfg.Server.Port),
@@ -178,8 +193,10 @@ func doServerCmd(cmd *cobra.Command, args []string) {
 
 func (h *srvHandler) readyzHandler(w http.ResponseWriter, r *http.Request) {
 	if !h.ready {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"not ready"}`))
+		problem.Write(r.Context(), w,
+			problem.Unavailable("Service is starting up.", 5).
+				WithType(problem.TypeNotReady).
+				WithInstance(r.URL.Path))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -204,7 +221,7 @@ func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
 
 	out, err := json.Marshal(res)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		problem.Write(ctx, w, problem.Internal(err).WithInstance(r.URL.Path))
 		return
 	}
 
@@ -212,4 +229,18 @@ func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(out); err != nil {
 		slog.WarnContext(ctx, "failed to write response", "error", err)
 	}
+}
+
+// demoValidationHandler returns a 400 problem with field-level errors.
+func (h *srvHandler) demoValidationHandler(w http.ResponseWriter, r *http.Request) {
+	problem.Write(r.Context(), w,
+		problem.InvalidParams(
+			problem.InvalidParam{Name: "age", Reason: "must be a positive integer"},
+			problem.InvalidParam{Name: "email", Reason: "must be a valid address"},
+		).WithInstance(r.URL.Path))
+}
+
+// demoPanicHandler panics, to show problem.Recoverer turning it into a 500.
+func (h *srvHandler) demoPanicHandler(w http.ResponseWriter, r *http.Request) {
+	panic("demo panic: this should surface as a 500 problem+json")
 }
