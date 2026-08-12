@@ -3,3 +3,7 @@ app.yml
 .env
 .vscode/
 .idea/
+
+# Local-only: points the build at a working copy of go-servicepack.
+go.work
+go.work.sum

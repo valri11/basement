@@ -1,6 +1,8 @@
 .git
 .gitea
 .claude
+go.work
+go.work.sum
 k8s/
 build/
 *.md
