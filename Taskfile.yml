@@ -126,7 +126,7 @@ tasks:
   oats:
     desc: Run OpenTelemetry acceptance tests (needs Docker)
     cmds:
-      - go run github.com/grafana/oats@latest -timeout 3m oats.yaml
+      - go run github.com/grafana/oats@v0.4.0 -timeout 3m oats.yaml
 
   tools:weaver:
     desc: Install weaver into ./bin

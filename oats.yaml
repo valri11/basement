@@ -5,11 +5,16 @@ docker-compose:
   files:
     - ./docker-compose.oats.yml
 input:
+  # status defaults to 200; any other response fails the poll until timeout.
   - path: /demo/trace
   - path: /demo/trace?fail=true
+    status: "500"
   - path: /demo/validation
+    status: "400"
   - path: /demo/panic
+    status: "500"
   - path: /no-such-route
+    status: "404"
 expected:
   traces:
     - traceql: '{ span.http.route = "/demo/trace" && kind = server }'

@@ -8,6 +8,7 @@ services:
       dockerfile: Dockerfile
     command:
       - server
+      - --disable-tls
       - --log-level=debug
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317

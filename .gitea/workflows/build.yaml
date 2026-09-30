@@ -36,7 +36,7 @@ jobs:
 
       - name: Run OATS
         run: |
-          go install github.com/grafana/oats@latest
+          go install github.com/grafana/oats@v0.4.0
           $(go env GOPATH)/bin/oats -timeout 3m oats.yaml
 
   live-check:
@@ -51,7 +51,7 @@ jobs:
           go-version: '1.26'
 
       - name: Weaver registry check, generated files and live-check
-        run: go run github.com/go-task/task/v3/cmd/task@latest semconv:check semconv:verify live-check
+        run: go run github.com/go-task/task/v3/cmd/task@v3.53.1 semconv:check semconv:verify live-check
 
   push:
     needs: [test, acceptance, live-check]
