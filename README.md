@@ -68,3 +68,10 @@ constants, and run `task live-check`.
 
 Weaver pays off when many services or teams share conventions. For a single service or
 library, a hand-written catalog plus a test (as in go-servicepack) is lighter.
+
+## Deployment
+
+The Helm chart and Flux release live in homelab-infra
+(`k8s/apps/basement`, `k8s/clusters/tg-dev/apps/basement.yaml`). CI pushes
+`datavault2.home.lab:15300/val/basement:<commit-sha>`; deploy by setting that SHA as
+`image.tag` in the HelmRelease.

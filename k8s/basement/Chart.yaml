@@ -1,6 +1,0 @@
-apiVersion: v2
-name: basement
-description: OTEL reference app — validates observability pipeline (traces, metrics, logs)
-type: application
-version: 0.1.0
-appVersion: "1.0.0"
