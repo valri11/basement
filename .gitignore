@@ -12,3 +12,6 @@ go.work.sum
 .DS_Store
 # OATS run output
 /build/
+
+# Binary from `go build` in grafana/; the tasks use `go run`.
+/grafana/grafana

@@ -176,6 +176,23 @@ tasks:
       - git status --porcelain -- internal/semconv docs/telemetry
       - test -z "$(git status --porcelain -- internal/semconv docs/telemetry)"
 
+  dashboards:generate:
+    desc: Generate grafana/dashboards/*.json from the Go definitions in grafana/
+    dir: grafana
+    # grafana/ is a module of its own, and go.work does not list it.
+    env:
+      GOWORK: "off"
+    cmds:
+      - go run .
+
+  dashboards:verify:
+    desc: Fail if grafana/dashboards/*.json is out of date with the Go definitions
+    dir: grafana
+    env:
+      GOWORK: "off"
+    cmds:
+      - go test ./...
+
   live-check:
     desc: Check emitted telemetry against the basement registry (weaver live-check)
     deps: [build, tools:weaver]

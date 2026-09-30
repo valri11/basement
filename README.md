@@ -40,6 +40,10 @@ Test OTEL instrumentation with oats (needs Docker)
 task oats
 ```
 
+[docs/observability-tutorial.md](docs/observability-tutorial.md) walks through the whole
+path: instrumenting code with OpenTelemetry, checking what it emits, writing a dashboard in
+Go, and deploying both to the homelab.
+
 ## Telemetry schema (Weaver)
 
 basement is the showcase for [OpenTelemetry Weaver](https://github.com/open-telemetry/weaver):
@@ -69,9 +73,32 @@ constants, and run `task live-check`.
 Weaver pays off when many services or teams share conventions. For a single service or
 library, a hand-written catalog plus a test (as in go-servicepack) is lighter.
 
+## Grafana dashboard
+
+The dashboard is defined in Go with the
+[Grafana Foundation SDK](https://github.com/grafana/grafana-foundation-sdk), in `grafana/`.
+`grafana/dashboards/basement.json` is generated from it; do not edit the JSON by hand.
+
+```
+task dashboards:generate   # write grafana/dashboards/*.json from grafana/*.go
+task dashboards:verify     # fail if the JSON is out of date with the Go
+```
+
+`grafana/` is a Go module of its own, so the SDK is not a dependency of the service. CI
+runs the verify test on every push. The local stack mounts the generated JSON into
+Grafana, and the homelab-infra chart ships a copy of it (see Deployment).
+
+To change a panel: edit `grafana/basement.go`, run `task dashboards:generate`, and commit
+both files. Panels that other dashboards could share, such as the timeseries style,
+datasource references and query helpers, are in `grafana/style.go`.
+
 ## Deployment
 
 The Helm chart and Flux release live in homelab-infra
 (`k8s/apps/basement`, `k8s/clusters/tg-dev/apps/basement.yaml`). CI pushes
 `datavault2.home.lab:15300/val/basement:<commit-sha>`; deploy by setting that SHA as
 `image.tag` in the HelmRelease.
+
+The chart also installs the Grafana dashboard: `k8s/apps/basement/dashboards/basement.json`
+is a copy of `grafana/dashboards/basement.json`, and a ConfigMap template labels it for
+Grafana's dashboard sidecar. Copy the file across when the dashboard changes.

@@ -23,6 +23,11 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      # grafana/ is a separate module, so the root ./... does not reach it.
+      - name: Dashboards are generated from grafana/*.go
+        working-directory: grafana
+        run: go test ./...
+
   live-check:
     needs: test
     runs-on: ubuntu-latest
