@@ -1,0 +1,54 @@
+file_format: definition/2
+attributes:
+  - key: basement.demo.work.result
+    type:
+      members:
+        - id: ok
+          value: ok
+          brief: The work unit completed.
+          stability: development
+        - id: error
+          value: error
+          brief: The work unit failed.
+          stability: development
+    stability: development
+    brief: Outcome of a demo work unit.
+  - key: basement.demo.work.item_count
+    type: int
+    stability: development
+    brief: Number of items processed by a demo work unit.
+    examples: [3]
+
+metrics:
+  - name: basement.demo.work.duration
+    instrument: histogram
+    unit: s
+    stability: development
+    requirement_level: recommended
+    brief: Duration of demo work units.
+    attributes:
+      - ref: basement.demo.work.result
+        requirement_level: required
+  - name: basement.demo.work.items
+    instrument: counter
+    unit: "{item}"
+    stability: development
+    requirement_level: recommended
+    brief: Number of items processed by demo work units.
+    attributes:
+      - ref: basement.demo.work.result
+        requirement_level: required
+
+spans:
+  - type: basement.demo.work
+    kind: internal
+    name:
+      note: demo.work
+    stability: development
+    requirement_level: recommended
+    brief: A unit of demo work done by GET /demo/trace.
+    attributes:
+      - ref: basement.demo.work.result
+        requirement_level: required
+      - ref: basement.demo.work.item_count
+        requirement_level: required

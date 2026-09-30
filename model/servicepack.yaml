@@ -1,0 +1,69 @@
+# Telemetry basement emits through go-servicepack. Its source of truth is
+# go-servicepack's docs/metrics.md; it is repeated here so live-check covers it.
+file_format: definition/2
+attributes:
+  - key: problem.type
+    type: string
+    stability: development
+    brief: RFC 9457 problem type URI of an error response.
+    note: "`unclassified` when the error response did not go through `problem.Write`."
+    examples:
+      - "https://problems.valri11.dev/validation-error"
+      - "about:blank"
+  - key: problem.status
+    type: int
+    stability: development
+    brief: HTTP status code carried by the problem details.
+    examples: [400, 500]
+
+metrics:
+  - name: servicepack.http.server.problems
+    instrument: counter
+    unit: "{problem}"
+    stability: development
+    requirement_level: recommended
+    brief: Number of HTTP server error responses (status 400 and above).
+    attributes:
+      - ref: http.request.method
+        requirement_level: required
+      - ref: http.route
+        requirement_level: required
+        note: "`unmatched` when the request was not routed by a ServeMux pattern."
+      - ref: http.response.status_code
+        requirement_level: required
+      - ref: problem.type
+        requirement_level: required
+
+imports:
+  metrics:
+    # otelhttp (telemetry.HTTPMiddleware)
+    - http.server.request.duration
+    - http.server.request.body.size
+    - http.server.response.body.size
+    # Go runtime instrumentation (telemetry.InitProviders)
+    - go.config.gogc
+    - go.goroutine.count
+    - go.memory.allocated
+    - go.memory.allocations
+    - go.memory.gc.goal
+    - go.memory.limit
+    - go.memory.used
+    - go.processor.limit
+  spans:
+    - span.http.server
+  attribute_groups:
+    # span, metric and log attributes
+    - registry.http
+    - registry.url
+    - registry.network
+    - registry.user_agent
+    - registry.error
+    - registry.exception
+    - registry.go
+    # resource attributes set by telemetry.InitProviders and the Helm chart
+    - registry.service
+    - registry.telemetry
+    - registry.host
+    - registry.os
+    - registry.process
+    - registry.deployment

@@ -1,0 +1,38 @@
+text_maps:
+  go_attr_value:
+    string: String
+    int: Int
+    double: Float64
+    boolean: Bool
+  go_type:
+    string: string
+    int: int
+    double: float64
+    boolean: bool
+
+params:
+  package: semconv
+
+whitespace_control:
+  trim_blocks: true
+  lstrip_blocks: true
+
+acronyms: ["HTTP", "URL", "ID", "API", "OK"]
+
+comment_formats:
+  go:
+    format: markdown
+    prefix: "// "
+    indent_type: Tab
+    trim: true
+default_comment_format: go
+
+templates:
+  - template: semconv.go.j2
+    filter: |-
+      {
+        attributes: ([.registry.attributes[] | select(.provenance.source == null)] | sort_by(.key)),
+        metrics: ([.registry.metrics[] | select(.provenance.source == null)] | sort_by(.name))
+      }
+    application_mode: single
+    file_name: semconv.go

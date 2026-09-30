@@ -1,0 +1,32 @@
+# Weaver config: https://github.com/open-telemetry/weaver
+[registry]
+path = "model"
+v2 = true
+
+[policy]
+paths = ["https://github.com/open-telemetry/opentelemetry-weaver-packages.git@cd596eae86e732158bc89c4f4c47d07a97e9ab34[policies/check/naming_conventions]"]
+
+[template]
+acronyms = ["HTTP", "URL", "ID", "API", "GC", "OK"]
+
+[template.text_maps.upstream_docs]
+"https://opentelemetry.io/schemas/1.44.0" = "https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/registry/attributes/{namespace}.md"
+
+[live-check]
+fail_on = "violation"
+
+[[live-check.finding_filters]]
+min_level = "improvement"
+# Everything in use is still development stability upstream.
+exclude = ["not_stable"]
+
+# slog keys on log records are free-form, not semconv attributes.
+[[live-check.finding_filters]]
+signal_type = "log"
+exclude = ["missing_attribute", "missing_namespace"]
+
+# Upstream defines these outside any attribute group, so a V2 registry cannot
+# import them yet.
+[[live-check.finding_filters]]
+exclude = ["missing_attribute"]
+sample_names = ["server.address", "server.port", "client.address"]

@@ -1,0 +1,6 @@
+name: basement
+description: Telemetry emitted by the basement demo service.
+schema_url: https://github.com/valri11/basement/schemas/0.1.0
+dependencies:
+  - schema_url: https://opentelemetry.io/schemas/1.44.0
+    registry_path: https://github.com/open-telemetry/semantic-conventions@v1.44.0[model]

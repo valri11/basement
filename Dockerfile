@@ -1,5 +1,5 @@
 # Builder stage
-FROM golang:1.25 AS builder
+FROM golang:1.26 AS builder
 
 WORKDIR /app
 
@@ -8,7 +8,10 @@ RUN go mod download
 
 COPY . ./
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/basement
+ARG VERSION=""
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-X github.com/valri11/basement/cmd.version=${VERSION}" \
+    -o /app/basement
 
 # Runtime stage
 FROM alpine:3.21

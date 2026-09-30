@@ -7,9 +7,10 @@ services:
       context: .
       dockerfile: Dockerfile
     command:
-      server
+      - server
+      - --log-level=debug
     environment:
-      OTEL_EXPORTER_OTLP_ENDPOINT: lgtm:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4317
       OTEL_METRIC_EXPORT_INTERVAL: "5000" # so we don't have to wait 60s for metrics
     ports:
       - "8080:8080"
@@ -18,6 +19,13 @@ services:
 
   lgtm:
     image: grafana/otel-lgtm
+    environment:
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/custom/basement.json
+      # Records a 0 at each series' start, so a counter's first increment shows in rate().
+      PROMETHEUS_EXTRA_ARGS: --enable-feature=created-timestamp-zero-ingestion
+    volumes:
+      - ./grafana/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/custom:ro
+      - ./grafana/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
     ports:
       - "4317:4317"
       - "3000:3000"

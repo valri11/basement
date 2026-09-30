@@ -15,16 +15,46 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Build
         run: go build ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -race ./...
+
+  acceptance:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Run OATS
+        run: |
+          go install github.com/grafana/oats@latest
+          $(go env GOPATH)/bin/oats -timeout 3m oats.yaml
+
+  live-check:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Weaver registry check, generated files and live-check
+        run: go run github.com/go-task/task/v3/cmd/task@latest semconv:check semconv:verify live-check
 
   push:
-    needs: test
+    needs: [test, acceptance, live-check]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -33,10 +63,30 @@ jobs:
       - name: Install skopeo
         run: apt-get update && apt-get install -y skopeo
 
+      - name: Set up buildx
+        run: |
+          mkdir -p ~/.docker
+          AUTH=$(printf '%s:%s' '${{ gitea.actor }}' '${{ secrets.REGISTRY_TOKEN }}' | base64 -w0)
+          echo "{\"auths\":{\"datavault2.home.lab:15300\":{\"auth\":\"$AUTH\"}}}" > ~/.docker/config.json
+          cat > /tmp/buildkitd.toml <<'EOF'
+          [registry."datavault2.home.lab:15300"]
+            http = true
+          EOF
+          docker buildx rm ci >/dev/null 2>&1 || true
+          docker buildx create --name ci --driver docker-container \
+            --driver-opt network=host --buildkitd-config /tmp/buildkitd.toml --use \
+            || { docker buildx rm ci >/dev/null 2>&1 || true; \
+                 docker buildx create --name ci --driver docker-container \
+                   --driver-opt network=host --config /tmp/buildkitd.toml --use; }
+
       - name: Build image
         run: |
           IMAGE=datavault2.home.lab:15300/${{ gitea.repository }}
-          docker build --network host -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
+          docker buildx build --builder ci --load --pull \
+            --cache-from type=registry,ref=$IMAGE:buildcache \
+            --cache-to type=registry,ref=$IMAGE:buildcache,mode=max,ignore-error=true \
+            --build-arg VERSION=${{ github.sha }} \
+            -t $IMAGE:latest -t $IMAGE:${{ github.sha }} .
 
       - name: Push to Gitea registry
         run: |

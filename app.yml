@@ -1,6 +1,5 @@
 server:
   port: 8080
   disableTLS: true
-  enableTelemetry: true
-
-
+  disableTelemetry: false
+  logLevel: info

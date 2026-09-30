@@ -1,0 +1,18 @@
+image:
+  repository: tg-tc:10443/basement
+  tag: latest
+
+ingress:
+  enabled: true
+  host: basement.home.lab
+
+otel:
+  serviceName: "basement"
+  environment: "dev"
+
+config:
+  server:
+    port: 8080
+    disableTLS: true
+    disableTelemetry: false
+    logLevel: debug

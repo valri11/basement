@@ -7,6 +7,8 @@ type ServerConfig struct {
 	TLSCertKeyFile     string
 	DisableTelemetry   bool
 	TelemetryCollector string
+	LogLevel           string
+	Environment        string
 }
 
 type Configuration struct {

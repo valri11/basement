@@ -5,24 +5,31 @@ package cmd
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/justinas/alice"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/valri11/basement/config"
+	"github.com/valri11/basement/internal/semconv"
 	"github.com/valri11/go-servicepack/metrics"
 	"github.com/valri11/go-servicepack/middleware/cors"
 	"github.com/valri11/go-servicepack/problem"
@@ -31,20 +38,53 @@ import (
 
 const (
 	serviceName = "basement"
+	scopeName   = "github.com/valri11/basement/cmd"
+
+	shutdownTimeout          = 10 * time.Second
+	telemetryShutdownTimeout = 5 * time.Second
 )
 
+// Set with -ldflags "-X github.com/valri11/basement/cmd.version=...".
+var version = ""
+
 var serverCmd = &cobra.Command{
-	Use:   "server",
-	Short: "Start the HTTP server with OpenTelemetry instrumentation",
-	Long:  `Start the basement HTTP server with configurable OpenTelemetry traces, metrics, and logs export.`,
-	Run:   doServerCmd,
+	Use:          "server",
+	Short:        "Start the HTTP server with OpenTelemetry instrumentation",
+	Long:         `Start the basement HTTP server with configurable OpenTelemetry traces, metrics, and logs export.`,
+	RunE:         doServerCmd,
+	SilenceUsage: true,
 }
 
 type srvHandler struct {
 	cfg     config.Configuration
 	tracer  trace.Tracer
 	metrics *metrics.AppMetrics
-	ready   bool
+	demo    demoMetrics
+	ready   atomic.Bool
+}
+
+type demoMetrics struct {
+	duration metric.Float64Histogram
+	items    metric.Int64Counter
+}
+
+func newDemoMetrics(meter metric.Meter) (demoMetrics, error) {
+	duration, err := meter.Float64Histogram(semconv.BasementDemoWorkDurationName,
+		metric.WithDescription(semconv.BasementDemoWorkDurationDescription),
+		metric.WithUnit(semconv.BasementDemoWorkDurationUnit),
+		metric.WithExplicitBucketBoundaries(0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1),
+	)
+	if err != nil {
+		return demoMetrics{}, err
+	}
+	items, err := meter.Int64Counter(semconv.BasementDemoWorkItemsName,
+		metric.WithDescription(semconv.BasementDemoWorkItemsDescription),
+		metric.WithUnit(semconv.BasementDemoWorkItemsUnit),
+	)
+	if err != nil {
+		return demoMetrics{}, err
+	}
+	return demoMetrics{duration: duration, items: items}, nil
 }
 
 func init() {
@@ -55,10 +95,11 @@ func init() {
 	serverCmd.Flags().String("tls-cert", "", "TLS certificate file")
 	serverCmd.Flags().String("tls-cert-key", "", "TLS certificate key file")
 	serverCmd.Flags().BoolP("disable-telemetry", "", false, "disable telemetry publishing")
-	serverCmd.Flags().String("telemetry-collector", "", "open telemetry grpc collector")
+	serverCmd.Flags().String("telemetry-collector", "", "OTLP gRPC collector URL (default from OTEL_EXPORTER_OTLP_ENDPOINT)")
+	serverCmd.Flags().String("log-level", "info", "log level: debug, info, warn, error")
+	serverCmd.Flags().String("environment", "", "deployment.environment.name resource attribute")
 
 	viper.BindEnv("server.disabletelemetry", "OTEL_SDK_DISABLED")
-	viper.BindEnv("server.telemetrycollector", "OTEL_EXPORTER_OTLP_ENDPOINT")
 
 	viper.BindPFlag("server.port", serverCmd.Flags().Lookup("port"))
 	viper.BindPFlag("server.disabletls", serverCmd.Flags().Lookup("disable-tls"))
@@ -66,162 +107,159 @@ func init() {
 	viper.BindPFlag("server.tlscertkeyfile", serverCmd.Flags().Lookup("tls-cert-key"))
 	viper.BindPFlag("server.disabletelemetry", serverCmd.Flags().Lookup("disable-telemetry"))
 	viper.BindPFlag("server.telemetrycollector", serverCmd.Flags().Lookup("telemetry-collector"))
+	viper.BindPFlag("server.loglevel", serverCmd.Flags().Lookup("log-level"))
+	viper.BindPFlag("server.environment", serverCmd.Flags().Lookup("environment"))
 
 	viper.AutomaticEnv()
 }
 
 func newWebSrvHandler(cfg config.Configuration) (*srvHandler, error) {
-	tracer := otel.Tracer(serviceName)
-
-	appMetrics, err := metrics.NewAppMetrics(otel.GetMeterProvider().Meter(serviceName))
+	meter := otel.Meter(scopeName)
+	appMetrics, err := metrics.NewAppMetrics(meter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metrics: %w", err)
+	}
+	demo, err := newDemoMetrics(meter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create demo metrics: %w", err)
 	}
 
 	srv := srvHandler{
 		cfg:     cfg,
-		tracer:  tracer,
+		tracer:  otel.Tracer(scopeName),
 		metrics: appMetrics,
+		demo:    demo,
 	}
 
 	return &srv, nil
 }
 
-func doServerCmd(cmd *cobra.Command, args []string) {
-	// Set up early logger with debug level (telemetry.InitProviders will replace with fanout logger)
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	slog.SetDefault(logger)
-
-	var cfg config.Configuration
-	err := viper.Unmarshal(&cfg)
-	if err != nil {
-		slog.Error("failed to unmarshal config", "error", err)
-		os.Exit(1)
-	}
-	slog.Debug("config", "cfg", cfg)
-
-	ctx := context.Background()
-	// Handle SIGINT (CTRL+C) gracefully.
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	shutdown, err := telemetry.InitProviders(context.Background(), cfg.Server.DisableTelemetry, serviceName, cfg.Server.TelemetryCollector)
-	if err != nil {
-		slog.Error("failed to init telemetry providers", "error", err)
-		os.Exit(1)
-	}
-	defer func() {
-		if err := shutdown(context.Background()); err != nil {
-			slog.Error("failed to shutdown telemetry providers", "error", err)
-		}
-	}()
-
-	h, err := newWebSrvHandler(cfg)
-	if err != nil {
-		slog.Error("failed to create server handler", "error", err)
-		os.Exit(1)
-	}
+func (h *srvHandler) routes() http.Handler {
+	chain := alice.New(
+		telemetry.HTTPMiddleware(),
+		telemetry.WithRequestLog(),
+		metrics.WithMetrics(h.metrics),
+		problem.Recoverer,
+	).Then
 
 	mux := http.NewServeMux()
 
-	mwChain := []alice.Constructor{
-		cors.CORS,
-		telemetry.WithOtelTracerContext(h.tracer),
-		telemetry.WithRequestLog(),
-		metrics.WithMetrics(h.metrics),
-		// After WithRequestLog so a span exists for RecordError, and inside
-		// WithMetrics so a recovered 500 is still counted in err_cnt.
-		problem.Recoverer,
-	}
-	handlerChain := alice.New(mwChain...).Then
+	// Probes are untraced: kubelet polls them every few seconds.
+	mux.HandleFunc("GET /livez", h.livezHandler)
+	mux.HandleFunc("GET /readyz", h.readyzHandler)
 
-	mux.Handle("/livez",
-		handlerChain(
-			otelhttp.NewHandler(http.HandlerFunc(h.livezHandler), "livez")))
-
-	mux.HandleFunc("/readyz", h.readyzHandler)
-
+	mux.Handle("/demo/trace", chain(http.HandlerFunc(h.demoTraceHandler)))
 	// Demo endpoints exercising the RFC 9457 error paths.
-	mux.Handle("/demo/validation",
-		handlerChain(
-			otelhttp.NewHandler(http.HandlerFunc(h.demoValidationHandler), "demo-validation")))
-	mux.Handle("/demo/panic",
-		handlerChain(
-			otelhttp.NewHandler(http.HandlerFunc(h.demoPanicHandler), "demo-panic")))
+	mux.Handle("/demo/validation", chain(http.HandlerFunc(h.demoValidationHandler)))
+	mux.Handle("/demo/panic", chain(http.HandlerFunc(h.demoPanicHandler)))
 
 	// Unmatched routes get problem+json instead of http.NotFound's text/plain.
-	mux.Handle("/", handlerChain(problem.NotFoundHandler()))
+	mux.Handle("/", chain(problem.NotFoundHandler()))
+
+	return cors.CORS(mux)
+}
+
+func parseLogLevel(s string) (slog.Level, error) {
+	var level slog.Level
+	if s == "" {
+		return slog.LevelInfo, nil
+	}
+	if err := level.UnmarshalText([]byte(s)); err != nil {
+		return level, fmt.Errorf("invalid log level %q: %w", s, err)
+	}
+	return level, nil
+}
+
+func doServerCmd(cmd *cobra.Command, args []string) error {
+	var cfg config.Configuration
+	if err := viper.Unmarshal(&cfg); err != nil {
+		return fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+	logLevel, err := parseLogLevel(cfg.Server.LogLevel)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	shutdownTelemetry, err := telemetry.InitProviders(ctx,
+		cfg.Server.DisableTelemetry,
+		serviceName,
+		cfg.Server.TelemetryCollector,
+		telemetry.WithLogLevel(logLevel),
+		telemetry.WithServiceVersion(version),
+		telemetry.WithEnvironment(cfg.Server.Environment),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to init telemetry providers: %w", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+		defer cancel()
+		if err := shutdownTelemetry(ctx); err != nil {
+			slog.Error("failed to shutdown telemetry providers", "error", err)
+		}
+	}()
+	slog.Debug("config", "cfg", cfg)
+
+	h, err := newWebSrvHandler(cfg)
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf("0.0.0.0:%d", cfg.Server.Port),
-		BaseContext:  func(_ net.Listener) context.Context { return ctx },
-		Handler:      mux,
+		Handler:      h.routes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
+	if !cfg.Server.DisableTLS {
+		cert, err := tls.LoadX509KeyPair(cfg.Server.TLSCertFile, cfg.Server.TLSCertKeyFile)
+		if err != nil {
+			return fmt.Errorf("failed to load TLS certificate: %w", err)
+		}
+		srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", cfg.Server.Port))
+	if err != nil {
+		return fmt.Errorf("failed to listen: %w", err)
+	}
 
 	srvErr := make(chan error, 1)
 	go func() {
-		slog.Info("server started", "port", cfg.Server.Port)
-		h.ready = true
 		if cfg.Server.DisableTLS {
-			srvErr <- srv.ListenAndServe()
+			srvErr <- srv.Serve(ln)
 		} else {
-			srvErr <- srv.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSCertKeyFile)
+			srvErr <- srv.ServeTLS(ln, "", "")
 		}
 	}()
+	h.ready.Store(true)
+	slog.Info("server started", "addr", ln.Addr().String())
 
-	// Wait for interruption or server error.
 	select {
 	case err := <-srvErr:
-		slog.Error("server failed to start", "error", err)
-		return
+		return fmt.Errorf("server failed: %w", err)
 	case <-ctx.Done():
 		stop()
 	}
 
-	// Graceful shutdown with timeout.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	h.ready.Store(false)
+	slog.Info("shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server shutdown failed", "error", err)
+		return fmt.Errorf("server shutdown failed: %w", err)
 	}
+	return nil
 }
 
-func (h *srvHandler) readyzHandler(w http.ResponseWriter, r *http.Request) {
-	if !h.ready {
-		problem.Write(r.Context(), w,
-			problem.Unavailable("Service is starting up.", 5).
-				WithType(problem.TypeNotReady).
-				WithInstance(r.URL.Path))
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ready"}`))
-}
-
-func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	tracer := telemetry.TracerOrDefault(ctx)
-	_, span := tracer.Start(ctx, "livezHandler")
-	defer span.End()
-
-	slog.DebugContext(ctx, "livez")
-	slog.InfoContext(ctx, "test log message")
-
-	res := struct {
-		Status string `json:"status"`
-	}{
-		Status: "ok",
-	}
-
-	out, err := json.Marshal(res)
+func writeJSON(ctx context.Context, w http.ResponseWriter, v any) {
+	out, err := json.Marshal(v)
 	if err != nil {
-		problem.Write(ctx, w, problem.Internal(err).WithInstance(r.URL.Path))
+		problem.Write(ctx, w, problem.Internal(err))
 		return
 	}
 
@@ -229,6 +267,70 @@ func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(out); err != nil {
 		slog.WarnContext(ctx, "failed to write response", "error", err)
 	}
+}
+
+type statusResponse struct {
+	Status string `json:"status"`
+}
+
+func (h *srvHandler) readyzHandler(w http.ResponseWriter, r *http.Request) {
+	if !h.ready.Load() {
+		problem.Write(r.Context(), w,
+			problem.Unavailable("Service is not ready.", 5).
+				WithType(problem.TypeNotReady).
+				WithInstance(r.URL.Path))
+		return
+	}
+	writeJSON(r.Context(), w, statusResponse{Status: "ready"})
+}
+
+func (h *srvHandler) livezHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(r.Context(), w, statusResponse{Status: "ok"})
+}
+
+const maxDemoItems = 100
+
+// demoTraceHandler does a unit of simulated work (?items=N, ?fail=true) in a
+// child span, recording the basement.demo.work.* metrics defined in model/.
+func (h *srvHandler) demoTraceHandler(w http.ResponseWriter, r *http.Request) {
+	items := 1 + rand.IntN(10)
+	if v := r.URL.Query().Get("items"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxDemoItems {
+			problem.Write(r.Context(), w, problem.InvalidParams(problem.InvalidParam{
+				Name:   "items",
+				Reason: fmt.Sprintf("must be an integer between 1 and %d", maxDemoItems),
+			}).WithInstance(r.URL.Path))
+			return
+		}
+		items = n
+	}
+	fail := r.URL.Query().Get("fail") == "true"
+
+	start := time.Now()
+	ctx, span := h.tracer.Start(r.Context(), "demo.work")
+	defer span.End()
+
+	time.Sleep(time.Duration(items) * 200 * time.Microsecond)
+
+	result := semconv.BasementDemoWorkResultOK
+	if fail {
+		result = semconv.BasementDemoWorkResultError
+	}
+	span.SetAttributes(result, semconv.BasementDemoWorkItemCount(items))
+	attrs := metric.WithAttributes(result)
+	h.demo.items.Add(ctx, int64(items), attrs)
+	h.demo.duration.Record(ctx, time.Since(start).Seconds(), attrs)
+
+	if fail {
+		span.SetStatus(codes.Error, "demo work failed")
+		problem.Write(ctx, w, problem.Internal(errors.New("demo work failed on request")).WithInstance(r.URL.Path))
+		return
+	}
+
+	slog.InfoContext(ctx, "demo work done", string(semconv.BasementDemoWorkItemCountKey), items)
+
+	writeJSON(ctx, w, statusResponse{Status: "ok"})
 }
 
 // demoValidationHandler returns a 400 problem with field-level errors.

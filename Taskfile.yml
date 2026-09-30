@@ -1,0 +1,191 @@
+version: "3"
+
+vars:
+  BINARY_NAME: basement
+  # OTEL_{TRACES,METRICS,LOGS}_EXPORTER values: otlp, console, "otlp,console", none
+  TRACES: otlp
+  METRICS: otlp
+  LOGS: otlp
+  LOG_LEVEL: debug
+  METRIC_EXPORT_INTERVAL: "15000"
+  WEAVER_VERSION: v0.26.1
+  WEAVER_PACKAGES: https://github.com/open-telemetry/opentelemetry-weaver-packages.git@cd596eae86e732158bc89c4f4c47d07a97e9ab34
+  WEAVER: ./bin/weaver
+
+tasks:
+  build:
+    desc: Build the binary
+    cmds:
+      - go build -o ./bin/{{.BINARY_NAME}} .
+
+  fmt:
+    desc: Format Go source files
+    cmds:
+      - gofumpt -w .
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -race ./...
+
+  tidy:
+    desc: Run go mod tidy
+    cmds:
+      - go mod tidy
+
+  check:
+    desc: Run fmt, vet, lint, and test
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: test
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f ./bin/{{.BINARY_NAME}}
+
+  run:
+    desc: "Run the server. Pick exporters per signal: task run TRACES=console METRICS=otlp,console LOGS=none"
+    deps: [build]
+    env:
+      OTEL_TRACES_EXPORTER: "{{.TRACES}}"
+      OTEL_METRICS_EXPORTER: "{{.METRICS}}"
+      OTEL_LOGS_EXPORTER: "{{.LOGS}}"
+      OTEL_METRIC_EXPORT_INTERVAL: "{{.METRIC_EXPORT_INTERVAL}}"
+    cmds:
+      - ./bin/{{.BINARY_NAME}} server --log-level={{.LOG_LEVEL}}
+
+  run:console:
+    desc: Run with all signals printed to stdout, no collector needed
+    cmds:
+      - task: run
+        vars: { TRACES: console, METRICS: console, LOGS: console }
+
+  run:traces:
+    desc: Run with traces printed to stdout, metrics and logs off
+    cmds:
+      - task: run
+        vars: { TRACES: console, METRICS: none, LOGS: none }
+
+  run:metrics:
+    desc: Run with metrics printed to stdout, traces and logs off
+    cmds:
+      - task: run
+        vars: { TRACES: none, METRICS: console, LOGS: none }
+
+  run:logs:
+    desc: Run with OTLP log records printed to stdout, traces and metrics off
+    cmds:
+      - task: run
+        vars: { TRACES: none, METRICS: none, LOGS: console }
+
+  run:lgtm:
+    desc: Run against the local LGTM stack, also printing metrics to stdout
+    cmds:
+      - task: run
+        vars: { METRICS: "otlp,console" }
+
+  lgtm:
+    desc: Start the Grafana LGTM stack with the Basement dashboard (Grafana on :3000, OTLP on :4317/:4318)
+    cmds:
+      - >-
+        docker run -p 3000:3000 -p 4317:4317 -p 4318:4318 --rm -ti
+        -v {{.TASKFILE_DIR}}/grafana/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/custom:ro
+        -v {{.TASKFILE_DIR}}/grafana/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
+        -e GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/otel-lgtm/grafana/conf/provisioning/dashboards/custom/basement.json
+        -e PROMETHEUS_EXTRA_ARGS=--enable-feature=created-timestamp-zero-ingestion
+        grafana/otel-lgtm
+
+  demo:
+    desc: "Send a mix of demo requests for DEMO_DURATION seconds (default 10)"
+    vars:
+      DEMO_DURATION: '{{.DEMO_DURATION | default "10"}}'
+      BASE_URL: http://localhost:8080
+    cmds:
+      - |
+        end=$(( $(date +%s) + {{.DEMO_DURATION}} ))
+        while [ "$(date +%s)" -lt "$end" ]; do
+          for path in /demo/trace "/demo/trace?items=5" "/demo/trace?fail=true" /demo/validation /demo/panic /no-such-route; do
+            printf '%s %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "{{.BASE_URL}}$path")" "$path"
+          done
+          sleep 0.5
+        done | sort | uniq -c
+
+  oats:
+    desc: Run OpenTelemetry acceptance tests (needs Docker)
+    cmds:
+      - go run github.com/grafana/oats@latest -timeout 3m oats.yaml
+
+  tools:weaver:
+    desc: Install weaver into ./bin
+    vars:
+      TARGET:
+        sh: |
+          case "$(uname -s)-$(uname -m)" in
+            Darwin-arm64) echo aarch64-apple-darwin ;;
+            Darwin-x86_64) echo x86_64-apple-darwin ;;
+            Linux-aarch64|Linux-arm64) echo aarch64-unknown-linux-gnu ;;
+            *) echo x86_64-unknown-linux-gnu ;;
+          esac
+      URL: https://github.com/open-telemetry/weaver/releases/download/{{.WEAVER_VERSION}}/weaver-{{.TARGET}}.tar.xz
+    status:
+      - '{{.WEAVER}} --version | grep -q "{{trimPrefix "v" .WEAVER_VERSION}}"'
+    cmds:
+      - mkdir -p bin
+      - curl -fsSL -o bin/weaver.tar.xz {{.URL}}
+      - curl -fsSL -o bin/weaver.tar.xz.sha256 {{.URL}}.sha256
+      - echo "$(cut -d' ' -f1 bin/weaver.tar.xz.sha256)  bin/weaver.tar.xz" | (command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -)
+      - tar -xJf bin/weaver.tar.xz -C bin --strip-components=1 weaver-{{.TARGET}}/weaver
+      - rm -f bin/weaver.tar.xz bin/weaver.tar.xz.sha256
+
+  semconv:check:
+    desc: Validate the telemetry registry (model/) against OTel naming policies
+    deps: [tools:weaver]
+    cmds:
+      - "{{.WEAVER}} registry check"
+
+  semconv:generate:
+    desc: Generate internal/semconv Go constants and docs/telemetry from model/
+    deps: [tools:weaver]
+    cmds:
+      - "{{.WEAVER}} registry generate -t templates go internal/semconv"
+      - gofmt -w internal/semconv
+      - rm -rf docs/telemetry
+      - >-
+        {{.WEAVER}} registry generate
+        -t '{{.WEAVER_PACKAGES}}[templates/docs]'
+        --param registry_base_url=/docs/telemetry
+        markdown docs/telemetry
+
+  semconv:verify:
+    desc: Fail if generated files are out of date with model/
+    cmds:
+      - task: semconv:generate
+      - git status --porcelain -- internal/semconv docs/telemetry
+      - test -z "$(git status --porcelain -- internal/semconv docs/telemetry)"
+
+  live-check:
+    desc: Check emitted telemetry against the basement registry (weaver live-check)
+    deps: [build, tools:weaver]
+    env:
+      WEAVER: "{{.WEAVER}}"
+      BIN: ./bin/{{.BINARY_NAME}}
+    cmds:
+      - ./scripts/live-check.sh
+
+  docker:build:
+    desc: Build Docker image
+    cmds:
+      - docker build --build-arg VERSION=$(git describe --always --dirty) -t {{.BINARY_NAME}}:latest .

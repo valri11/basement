@@ -5,56 +5,61 @@ docker-compose:
   files:
     - ./docker-compose.oats.yml
 input:
-  - path: /livez
+  - path: /demo/trace
+  - path: /demo/trace?fail=true
   - path: /demo/validation
   - path: /demo/panic
   - path: /no-such-route
 expected:
   traces:
-    # http.target was removed in current OTEL semconv; otelhttp emits http.route.
-    - traceql: '{ span.http.route = "/livez" }'
+    - traceql: '{ span.http.route = "/demo/trace" && kind = server }'
       spans:
-        - name: "livez"
+        - name: "GET /demo/trace"
+          attributes:
+            service.name: basement
+        - name: "demo.work"
           attributes:
             service.name: basement
 
-    # RFC 9457: problem.Write tags the span with the problem type and status, so
-    # a failure is findable in Tempo by cause and not only by status code.
-    # The handler runs inside the otelhttp span, so the tag lands on it.
-    - traceql: '{ span.problem.type = "https://problems.valri11.dev/validation-error" && span.problem.status = 400 }'
+    # 4xx leaves the SERVER span status unset (semconv).
+    - traceql: '{ kind = server && status != error && span.problem.type = "https://problems.valri11.dev/validation-error" && span.problem.status = 400 }'
       spans:
-        - name: "demo-validation"
+        - name: "GET /demo/validation"
           attributes:
             service.name: basement
 
-    # A recovered panic must still mark the trace as failed. problem.Recoverer
-    # sits outside the per-route otelhttp handler, so the tag lands on the
-    # "request" span started by telemetry.WithRequestLog.
-    - traceql: '{ status = error && span.problem.type = "https://problems.valri11.dev/panic" && span.problem.status = 500 }'
+    - traceql: '{ kind = server && status = error && span.problem.type = "https://problems.valri11.dev/panic" && span.http.response.status_code = 500 }'
       spans:
-        - name: "request"
+        - name: "GET /demo/panic"
           attributes:
             service.name: basement
 
-    # The catch-all 404 handler is chained but not otelhttp-wrapped, so it also
-    # reports on the "request" span, with no specific type.
-    - traceql: '{ span.problem.type = "about:blank" && span.problem.status = 404 }'
+    - traceql: '{ kind = server && span.http.route = "/" && span.problem.type = "about:blank" && span.problem.status = 404 }'
       spans:
-        - name: "request"
+        - name: "GET /"
           attributes:
             service.name: basement
 
   metrics:
-    - promql: 'req_cnt_total{service_name="basement"}'
+    - promql: 'http_server_request_duration_seconds_count{service_name="basement",http_route="/demo/trace"}'
       value: "> 0"
 
-    # err_cnt is broken down by problem type, so each error cause is countable
-    # on its own rather than lumped into a status-code bucket.
-    - promql: 'err_cnt_total{service_name="basement",problem_type="https://problems.valri11.dev/validation-error",status="400"}'
+    - promql: 'servicepack_http_server_problems_total{service_name="basement",problem_type="https://problems.valri11.dev/validation-error",http_response_status_code="400"}'
       value: "> 0"
 
-    - promql: 'err_cnt_total{service_name="basement",problem_type="https://problems.valri11.dev/panic",status="500"}'
+    - promql: 'servicepack_http_server_problems_total{service_name="basement",problem_type="https://problems.valri11.dev/panic",http_response_status_code="500"}'
       value: "> 0"
 
-    - promql: 'err_cnt_total{service_name="basement",problem_type="about:blank",status="404"}'
+    - promql: 'servicepack_http_server_problems_total{service_name="basement",problem_type="about:blank",http_route="/",http_response_status_code="404"}'
       value: "> 0"
+
+    - promql: 'basement_demo_work_items_total{service_name="basement",basement_demo_work_result="ok"}'
+      value: "> 0"
+
+    - promql: 'basement_demo_work_duration_seconds_count{service_name="basement",basement_demo_work_result="error"}'
+      value: "> 0"
+
+  logs:
+    - logql: '{service_name="basement"} |= "demo work done"'
+      contains:
+        - "demo work done"

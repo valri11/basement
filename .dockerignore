@@ -9,4 +9,6 @@ build/
 LICENSE
 oats.yaml
 docker-compose*.yml
-run_basement.sh
+Taskfile.yml
+bin/
+grafana/

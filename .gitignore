@@ -1,4 +1,5 @@
 /basement
+/bin/
 app.yml
 .env
 .vscode/
@@ -7,3 +8,7 @@ app.yml
 # Local-only: points the build at a working copy of go-servicepack.
 go.work
 go.work.sum
+.task/
+.DS_Store
+# OATS run output
+/build/
