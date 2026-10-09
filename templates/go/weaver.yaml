@@ -31,8 +31,10 @@ templates:
   - template: semconv.go.j2
     filter: |-
       {
-        attributes: ([.registry.attributes[] | select(.provenance.source == null)] | sort_by(.key)),
-        metrics: ([.registry.metrics[] | select(.provenance.source == null)] | sort_by(.name))
+        attributes: ([.registry.attributes[] | select(.provenance.source == null)]
+          | sort_by([(.key | startswith("problem.")), .key])),
+        metrics: ([.registry.metrics[] | select(.provenance.source == null)]
+          | sort_by([(.name | startswith("servicepack.")), .name]))
       }
     application_mode: single
     file_name: semconv.go
