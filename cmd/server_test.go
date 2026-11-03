@@ -272,3 +272,70 @@ func TestDemoWorkRejectsBadItems(t *testing.T) {
 		}
 	}
 }
+
+func TestSpanAttributesOnSuccess(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	if rec := get(srv, "/demo/trace?items=5", nil); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	s := serverSpan(t)
+	if s.Status().Code != codes.Unset {
+		t.Errorf("server span status = %v, want Unset", s.Status().Code)
+	}
+
+	// Check semantic conventions on the server span
+	if got := spanAttr(s, "http.response.status_code").AsInt64(); got != http.StatusOK {
+		t.Errorf("http.response.status_code = %d, want 200", got)
+	}
+	if got := spanAttr(s, "http.route").AsString(); got != "/demo/trace" {
+		t.Errorf("http.route = %q, want \"/demo/trace\"", got)
+	}
+
+	// Check the internal demo.work span
+	var workSpan sdktrace.ReadOnlySpan
+	for _, es := range spans.Ended() {
+		if es.Name() == "demo.work" {
+			workSpan = es
+			break
+		}
+	}
+
+	if workSpan == nil {
+		t.Fatal("demo.work span not found")
+	}
+
+	if workSpan.Parent().SpanID() != s.SpanContext().SpanID() {
+		t.Errorf("demo.work parent = %s, want server span %s", workSpan.Parent().SpanID(), s.SpanContext().SpanID())
+	}
+
+	if got := spanAttr(workSpan, semconv.BasementDemoWorkItemCountKey).AsInt64(); got != 5 {
+		t.Errorf("demo.work item_count = %d, want 5", got)
+	}
+}
+
+func TestServerReadiness(t *testing.T) {
+	srv, h := newTestServer(t)
+
+	// 1. Initially, it should be 503 (Not Ready)
+	if rec := get(srv, "/readyz", nil); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("readyz before start = %d, want 503", rec.Code)
+	}
+
+	// 2. Mark as ready
+	h.ready.Store(true)
+
+	// 3. Now it should be 200 (Ready)
+	if rec := get(srv, "/readyz", nil); rec.Code != http.StatusOK {
+		t.Errorf("readyz after start = %d, want 200", rec.Code)
+	}
+
+	// 4. Verify the body content
+	// Note: The response is JSON {"status": "ready"}
+	// We can do a simple string check or unmarshal
+	expectedBody := `{"status":"ready"}`
+	if rec := get(srv, "/readyz", nil); rec.Body.String() != expectedBody {
+		t.Errorf("readyz body = %q, want %q", rec.Body.String(), expectedBody)
+	}
+}
