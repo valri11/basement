@@ -7,6 +7,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -344,4 +347,46 @@ func TestServerReadiness(t *testing.T) {
 	if body.Status != "ready" {
 		t.Errorf("readyz status = %q, want %q", body.Status, "ready")
 	}
+}
+
+func TestReadyzNotReady(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	// 1. Initially, it should be 503 (Not Ready)
+	rec := get(srv, "/readyz", nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("readyz status = %d, want 503", rec.Code)
+	}
+
+	// 2. Verify the body is a problem+json with TypeNotReady
+	var body struct {
+		Type     string `json:"type"`
+		Instance string `json:"instance"`
+		Title    string `json:"title"`
+		Status   int    `json:"status"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode JSON: %v", err)
+	}
+
+	if body.Status != http.StatusServiceUnavailable {
+		t.Errorf("problem status = %d, want 503", body.Status)
+	}
+	if body.Instance != "/readyz" {
+		t.Errorf("problem instance = %q, want \"/readyz\"", body.Instance)
+	}
+}
+
+func TestLivez(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	rec := get(srv, "/livez", nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&body))
+	assert.Equal(t, "ok", body.Status)
 }
