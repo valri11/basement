@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -327,15 +328,20 @@ func TestServerReadiness(t *testing.T) {
 	h.ready.Store(true)
 
 	// 3. Now it should be 200 (Ready)
-	if rec := get(srv, "/readyz", nil); rec.Code != http.StatusOK {
+	rec := get(srv, "/readyz", nil)
+	if rec.Code != http.StatusOK {
 		t.Errorf("readyz after start = %d, want 200", rec.Code)
 	}
 
 	// 4. Verify the body content
 	// Note: The response is JSON {"status": "ready"}
-	// We can do a simple string check or unmarshal
-	expectedBody := `{"status":"ready"}`
-	if rec := get(srv, "/readyz", nil); rec.Body.String() != expectedBody {
-		t.Errorf("readyz body = %q, want %q", rec.Body.String(), expectedBody)
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode JSON: %v", err)
+	}
+	if body.Status != "ready" {
+		t.Errorf("readyz status = %q, want %q", body.Status, "ready")
 	}
 }
